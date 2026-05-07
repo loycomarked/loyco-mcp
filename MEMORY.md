@@ -6,9 +6,17 @@ Living doc for working assumptions, observations from data, and open questions. 
 
 ## Status
 
-- Fase 0 in progress.
-- Awaiting Supabase credentials suitable for DDL (service role key, PAT + project ref, or full Postgres connection string).
-- All architectural decisions in `DECISIONS.md` are locked unless explicitly superseded.
+- **Grand Member single-chain prototype is live in Supabase** (per ADR-0018, supersedes original 5-chain seed).
+- Schema migrations 0001–0019 applied; advisor 0 lints.
+- Seed re-run via SQL Editor with `supabase/seed/grand_member/{01,02,03}*.sql`.
+- Verified totals: 1 chain × 15 avdelinger × 2 000 members × 40 000 bookings (64.8% member / 35.2% non-member) × 25 880 transactions × 6 309 point_transactions × 16 941 communications.
+- Average member transaction is 2.0× the average non-member transaction (NOK 21 547 vs NOK 10 740) — driven by longer member stays + better rate multiplier.
+
+## Open follow-ups
+
+- `hotel_comparison_view` times out due to repeated `lc_to_currency()` lookups. Either add a covering index `(from_ccy, to_ccy, rate_date DESC)` on `currency_rates`, or promote the view to a materialized view refreshed nightly. Low priority — other views still respond fine.
+- The legacy 5-chain seed files at `supabase/seed/0[1-9]_*.sql` are kept for historical reference but are NOT current. The active seed lives at `supabase/seed/grand_member/`.
+- Schema is multi-tenant-capable; if Loyco onboards a real second chain later, only seed expansion is required (no migrations).
 
 ---
 
