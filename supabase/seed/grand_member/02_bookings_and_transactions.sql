@@ -1,52 +1,57 @@
 -- ====================================================================
--- Grand Member re-seed — Part 2 of 3: bookings + room_stays + segments + history + transactions + lines
+-- Grand Member re-seed — Part 2 of 3 (v2): bookings + transactions
+-- v2 FIX: replaced array CROSS JOIN with indexed lookup to avoid temp-file spill.
+-- Original v1 caused "No space left on device" because the 2000-element member UUID array
+-- got copied into each of 40 000 generated rows (~2.9 GB temp).
+--
+-- v2 strategy:
+--   - Hotels (15 rows) embedded as inline VALUES (no array)
+--   - Members looked up via row_number() index in a separate CTE
+--   - Each row in `picks` only stores small integer indices, not full arrays
+--
 -- Run AFTER part 1.
--- Estimated runtime: 30–90 seconds (the heaviest part).
--- Member/non-member split: 65/35. Non-member rate ~0.65-0.95×, members ~0.85-1.35×. Non-member nights weighted to 1-3.
+-- Estimated runtime: 30–90 seconds.
 -- ====================================================================
 
 SELECT setseed(0.44);
 
 -- ===== 2.1 Bookings (40 000 across 15 hotels) =====
-WITH hotels_per_chain AS (
-  SELECT chain_group_id,
-         array_agg(id ORDER BY id) AS hotel_ids,
-         array_agg(default_currency ORDER BY id) AS ccys,
-         array_agg(default_pms ORDER BY id) AS pmss,
-         count(*)::int AS sz
-  FROM hotels
-  WHERE chain_group_id = 'a1111111-aaaa-aaaa-aaaa-000000000001'
-  GROUP BY chain_group_id
+WITH hotels_idx (idx, hotel_id, ccy, pms_code) AS (
+  VALUES
+    (1::int,  'b2200001-aaaa-aaaa-aaaa-000000000001'::uuid, 'NOK'::char(3), 'stayntouch'::pms_system_code),
+    (2,       'b2200001-aaaa-aaaa-aaaa-000000000002'::uuid, 'NOK'::char(3), 'stayntouch'::pms_system_code),
+    (3,       'b2200001-aaaa-aaaa-aaaa-000000000003'::uuid, 'NOK'::char(3), 'mews'::pms_system_code),
+    (4,       'b2200001-aaaa-aaaa-aaaa-000000000004'::uuid, 'NOK'::char(3), 'protel_air'::pms_system_code),
+    (5,       'b2200001-aaaa-aaaa-aaaa-000000000005'::uuid, 'NOK'::char(3), 'mews'::pms_system_code),
+    (6,       'b2200001-aaaa-aaaa-aaaa-000000000006'::uuid, 'SEK'::char(3), 'stayntouch'::pms_system_code),
+    (7,       'b2200001-aaaa-aaaa-aaaa-000000000007'::uuid, 'SEK'::char(3), 'stayntouch'::pms_system_code),
+    (8,       'b2200001-aaaa-aaaa-aaaa-000000000008'::uuid, 'SEK'::char(3), 'mews'::pms_system_code),
+    (9,       'b2200001-aaaa-aaaa-aaaa-000000000009'::uuid, 'SEK'::char(3), 'protel_air'::pms_system_code),
+    (10,      'b2200001-aaaa-aaaa-aaaa-000000000010'::uuid, 'DKK'::char(3), 'stayntouch'::pms_system_code),
+    (11,      'b2200001-aaaa-aaaa-aaaa-000000000011'::uuid, 'DKK'::char(3), 'stayntouch'::pms_system_code),
+    (12,      'b2200001-aaaa-aaaa-aaaa-000000000012'::uuid, 'DKK'::char(3), 'visbook'::pms_system_code),
+    (13,      'b2200001-aaaa-aaaa-aaaa-000000000013'::uuid, 'EUR'::char(3), 'mews'::pms_system_code),
+    (14,      'b2200001-aaaa-aaaa-aaaa-000000000014'::uuid, 'ISK'::char(3), 'protel_air'::pms_system_code),
+    (15,      'b2200001-aaaa-aaaa-aaaa-000000000015'::uuid, 'ISK'::char(3), 'mews'::pms_system_code)
 ),
-members_arr AS (
-  SELECT array_agg(id ORDER BY id) AS member_ids, count(*)::int AS sz FROM members
+members_idx AS (
+  SELECT id AS member_id, row_number() OVER (ORDER BY id) AS idx FROM members
 ),
+member_count AS (SELECT count(*)::int AS sz FROM members),
 gs AS (
-  SELECT n FROM generate_series(1, 40000) AS n
+  SELECT n, random() AS r1, random() AS r2, random() AS r3, random() AS r4,
+         random() AS r5, random() AS r6, random() AS r7
+  FROM generate_series(1, 40000) AS n
 ),
-generated AS (
+picks AS (
   SELECT
-    g.n,
-    'a1111111-aaaa-aaaa-aaaa-000000000001'::uuid AS chain_id,
-    h.hotel_ids, h.ccys, h.pmss, h.sz AS hotel_sz,
-    m.member_ids, m.sz AS member_sz,
-    random() AS r1, random() AS r2, random() AS r3, random() AS r4, random() AS r5, random() AS r6, random() AS r7,
-    -- arrival_date in 2023-05-01 .. 2027-05-01 with rough weekly seasonality bump
-    (date '2023-05-01' + ((g.n * 73) % 1462) +
-       CASE WHEN ((g.n) % 7) IN (0,1,2) THEN 0 ELSE (random() * 7)::int END
-    ) AS raw_date_seed
-  FROM gs g
-  CROSS JOIN hotels_per_chain h
-  CROSS JOIN members_arr m
-),
-prepared AS (
-  SELECT g.*,
-    g.hotel_ids[1 + ((g.n + 7) % g.hotel_sz)] AS hotel_id_pick,
-    g.ccys[1 + ((g.n + 7) % g.hotel_sz)] AS hotel_ccy,
-    g.pmss[1 + ((g.n + 7) % g.hotel_sz)] AS hotel_pms,
-    -- 65% have a member, 35% non-member (ADR-0018)
+    g.n, g.r1, g.r2, g.r3, g.r4, g.r5, g.r6, g.r7,
+    ((g.n + 7) % 15) + 1 AS hotel_idx,
     (g.r1 < 0.65) AS is_member,
-    CASE WHEN g.r1 < 0.65 THEN g.member_ids[1 + ((g.n * 13 + 17) % g.member_sz)] ELSE NULL END AS member_id_pick,
+    CASE WHEN g.r1 < 0.65 THEN ((g.n * 13 + 17) % (SELECT sz FROM member_count)) + 1 ELSE NULL END AS member_idx,
+    -- arrival_date with weekly seasonality bump
+    (date '2023-05-01' + ((g.n * 73) % 1462) +
+       CASE WHEN ((g.n) % 7) IN (0,1,2) THEN 0 ELSE (g.r5 * 7)::int END) AS arrival_pick,
     -- channel mix
     CASE
       WHEN g.r2 < 0.55 THEN 'ota'
@@ -55,46 +60,44 @@ prepared AS (
       WHEN g.r2 < 0.96 THEN 'group'
       ELSE 'walk_in'
     END::booking_channel AS channel_pick,
-    g.raw_date_seed AS arrival_pick,
-    -- Non-members get shorter stays (90% 1-3 nights), members get the original distribution
+    -- nights: members varied, non-members shorter
     CASE
       WHEN g.r1 >= 0.65 THEN
-        CASE WHEN random() < 0.85 THEN 1 + (random() * 2)::int ELSE 3 + (random() * 4)::int END
+        CASE WHEN g.r5 < 0.85 THEN 1 + (g.r6 * 2)::int ELSE 3 + (g.r6 * 4)::int END
       ELSE
-        CASE WHEN random() < 0.65 THEN 1 + (random() * 2)::int
-             WHEN random() < 0.90 THEN 3 + (random() * 4)::int
-             ELSE 5 + (random() * 9)::int END
+        CASE WHEN g.r5 < 0.65 THEN 1 + (g.r6 * 2)::int
+             WHEN g.r5 < 0.90 THEN 3 + (g.r6 * 4)::int
+             ELSE 5 + (g.r6 * 9)::int END
     END AS nights_pick
-  FROM generated g
+  FROM gs g
+),
+joined AS (
+  SELECT p.*, h.hotel_id, h.ccy AS hotel_ccy, h.pms_code AS hotel_pms,
+         mi.member_id
+  FROM picks p
+  JOIN hotels_idx h ON h.idx = p.hotel_idx
+  LEFT JOIN members_idx mi ON mi.idx = p.member_idx
 ),
 status_assigned AS (
-  SELECT p.*, p.arrival_pick + p.nights_pick AS departure_pick,
+  SELECT j.*, j.arrival_pick + j.nights_pick AS departure_pick,
     CASE
-      WHEN p.arrival_pick > current_date THEN
-        CASE WHEN p.r3 < 0.05 THEN 'cancelled' ELSE 'upcoming' END
-      WHEN p.arrival_pick + p.nights_pick > current_date AND p.arrival_pick <= current_date THEN
-        CASE WHEN p.r3 < 0.10 THEN 'cancelled' ELSE 'in_house' END
+      WHEN j.arrival_pick > current_date THEN
+        CASE WHEN j.r3 < 0.05 THEN 'cancelled' ELSE 'upcoming' END
+      WHEN j.arrival_pick + j.nights_pick > current_date AND j.arrival_pick <= current_date THEN
+        CASE WHEN j.r3 < 0.10 THEN 'cancelled' ELSE 'in_house' END
       ELSE
-        CASE
-          WHEN p.r3 < 0.12 THEN 'cancelled'
-          WHEN p.r3 < 0.14 THEN 'no_show'
-          ELSE 'checked_out'
-        END
+        CASE WHEN j.r3 < 0.12 THEN 'cancelled'
+             WHEN j.r3 < 0.14 THEN 'no_show'
+             ELSE 'checked_out' END
     END::booking_status AS status_pick
-  FROM prepared p
+  FROM joined j
 ),
 final AS (
   SELECT s.*,
-    -- Per-night base rate: 2200 NOK for NO/SE/DK hotels, scaled per hotel currency for foreign
-    -- Member bookings: 0.85-1.35× base. Non-member: 0.65-0.95× base.
     ROUND((
       CASE s.hotel_ccy::text
-        WHEN 'NOK' THEN 2200
-        WHEN 'SEK' THEN 2400
-        WHEN 'DKK' THEN 1800
-        WHEN 'EUR' THEN 220
-        WHEN 'ISK' THEN 28000
-        ELSE 2200
+        WHEN 'NOK' THEN 2200 WHEN 'SEK' THEN 2400 WHEN 'DKK' THEN 1800
+        WHEN 'EUR' THEN 220  WHEN 'ISK' THEN 28000 ELSE 2200
       END
       * s.nights_pick
       * CASE WHEN s.is_member THEN (0.85 + s.r4 * 0.50) ELSE (0.65 + s.r4 * 0.30) END
@@ -110,7 +113,8 @@ INSERT INTO bookings (
   reservation_source_label, is_member_booking, returning_member, cancelled_at, booked_at, metadata
 )
 SELECT
-  f.chain_id, f.hotel_id_pick, f.member_id_pick, f.hotel_pms, f.resv_no_pick,
+  'a1111111-aaaa-aaaa-aaaa-000000000001'::uuid,
+  f.hotel_id, f.member_id, f.hotel_pms, f.resv_no_pick,
   upper(substring(md5(f.resv_no_pick) for 8)),
   f.channel_pick, f.status_pick, f.arrival_pick, f.departure_pick,
   CASE WHEN f.status_pick IN ('in_house','checked_out') THEN f.arrival_pick + interval '14 hours' + (f.r5 * interval '6 hours') ELSE NULL END,
@@ -180,21 +184,13 @@ INSERT INTO booking_status_history (booking_id, from_status, to_status, occurred
 SELECT b.id, 'in_house'::booking_status, 'checked_out'::booking_status, b.check_out_at
 FROM bookings b WHERE b.status = 'checked_out';
 
--- ===== 2.5 Transactions (one per non-cancelled-without-deposit booking + cancelled with refund) =====
+-- ===== 2.5 Transactions =====
 SELECT setseed(0.46);
 
 WITH bonus_lookup AS (
   SELECT * FROM (VALUES
-    ('bronze',  'direct',    2.0),
-    ('silver',  'direct',    5.0),
-    ('gold',    'direct',    10.0),
-    ('platinum','direct',    15.0),
-    ('black',   'direct',    18.0),
-    ('bronze',  'corporate', 3.0),
-    ('silver',  'corporate', 3.6),
-    ('gold',    'corporate', 4.5),
-    ('platinum','corporate', 5.4),
-    ('black',   'corporate', 6.0)
+    ('bronze',  'direct',    2.0),('silver',  'direct',    5.0),('gold',    'direct',    10.0),('platinum','direct',    15.0),('black',   'direct',    18.0),
+    ('bronze',  'corporate', 3.0),('silver',  'corporate', 3.6),('gold',    'corporate', 4.5),('platinum','corporate', 5.4),('black',   'corporate', 6.0)
   ) AS t(tier_code, channel, pct)
 ),
 src AS (
@@ -255,7 +251,6 @@ SELECT tx.id, 'Accommodation',
   'ROOM-' || (length(tx.external_transaction_id) % 100)::text
 FROM transactions tx JOIN bookings b ON b.id = tx.booking_id;
 
--- F&B/Spa lines: members 30%, non-members 15% (lower add-on usage)
 INSERT INTO transaction_lines (transaction_id, product_type, line_info, quantity, unit_amount, amount, currency, bonus_factor, product_code)
 SELECT tx.id, (ARRAY['Food','Beverage','Spa'])[1 + floor(random()*3)::int],
   NULL, 1::numeric,
