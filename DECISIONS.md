@@ -297,6 +297,43 @@ Channel resolution at PMS-mapping time uses heuristics:
 
 ---
 
+## ADR-0018 — Single-chain prototype: Grand Member only (supersedes parts of ADR-0002, ADR-0004)
+
+**Status:** Accepted (2026-05-06)
+
+**Context:** User requested the database focus exclusively on a single chain — Grand Member — rather than the original 5-chain spread. Reasoning: prototyping is faster with one customer in scope, the adminportal UX is simpler (no chain switcher), and demos feel more concrete.
+
+User-provided naming:
+- "Kjede" → "Program" — the loyalty program is **Grand Member**
+- "Department" → "Avdeling" — hotels are presented as departments named **Grand <City>** (Grand Oslo, Grand Bergen, ...)
+
+**Decision:**
+
+**Schema:** Kept multi-tenant-capable (chain_groups + chain_group_id columns + RLS policies) so future chains can be added without schema migration. Practically populated with one chain only.
+
+**Seed (Grand Member exclusive):**
+- 1 chain_group: Grand Member
+- 1 loyalty_program: Grand Member program
+- 5 tiers: Bronze, Silver, Gold, Platinum, Black
+- 15 hotels (avdelinger) named Grand <City>: Oslo, Bergen, Trondheim, Stavanger, Tromsø, Stockholm, Göteborg, Malmö, Uppsala, København, Aarhus, Odense, Helsinki, Reykjavík, Akureyri
+- 4 PMS systems used (StayNTouch ×6, Mews ×5, Protel Air ×3, Visbook ×1)
+
+**Seed scale (supersedes part of ADR-0004):**
+- Hotels: 15 (was 25 across 5 chains)
+- Members: 2 000 (unchanged, all in Grand Member)
+- Bookings: 40 000 (unchanged)
+- **Member vs non-member booking split:** 65% member / 35% non-member (was 80/20). Drives more diverse data.
+- **Non-member bookings get lower per-night rate** (~0.65–0.95× base) and **shorter stays** (mostly 1–3 nights), reflecting walk-in / one-time-guest reality. Member bookings stay at ~0.85–1.35× base.
+- All bookings (member and non-member) generate transactions per existing logic; only members earn points.
+
+**Consequences:**
+- Cleaner demo: every screen shows Grand Member without a chain selector
+- Reporting views still work because they group by chain_group_id (which has only one value)
+- If Loyco onboards a real second chain later, schema is ready — only seed expansion needed
+- Old structural UUIDs (`a1111111-0000-…`, `b22000XX-0000-…`, etc.) replaced with new pattern using `aaaa` band (`a1111111-aaaa-…`) for Grand Member to make the cutover obvious in tools
+
+---
+
 ## ADR-0017 — Norwegian-language docs, English schema
 
 **Status:** Accepted (2026-05-06)
